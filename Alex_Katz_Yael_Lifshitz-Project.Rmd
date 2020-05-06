@@ -1,0 +1,642 @@
+---
+title: "Final Project 2019"
+author: "Alex Katz & Yael Lifshitz"
+date: "September 15, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Link to static page: [https://ankatz614.bitbucket.io](https://ankatz614.bitbucket.io)  
+Code for extracting to R code from R Studio: `knitr::purl("Alex_Katz_Yael_Lifshitz-Project.Rmd", output = "Alex_Katz_Yael_Lifshitz-Project.R")`
+
+## Introduction
+
+In this project we plan on analyzing the **Google Play Store Apps** Data-set that we downloaded from Kaggle.
+
+The data was collected by *Lavanya Gupta* and last updated on February 3rd, 2019.
+The Data-set can be found at: [https://www.kaggle.com/lava18/google-play-store-apps/version/6](https://www.kaggle.com/lava18/google-play-store-apps/version/6). This is the provided description of the data-set from the Kaggle page:
+
+> **Context**:  
+> While many public datasets (on Kaggle and the like) provide Apple App Store data, there are not many counterpart datasets available for Google Play Store apps anywhere on the web. On digging deeper, I found out that iTunes App Store page deploys a nicely indexed appendix-like structure to allow for simple and easy web scraping. On the other hand, Google Play Store uses sophisticated modern-day techniques (like dynamic page load) using JQuery making scraping more challenging.  
+>**Content**:  
+>Each app (row) has values for category, rating, size, and more.  
+>**Acknowledgements**:  
+>This information is scraped from the Google Play Store. This app information would not be available without it.  
+>**Inspiration**:  
+>The Play Store apps data has enormous potential to drive app-making businesses to success. Actionable insights can be drawn for developers to work on and capture the Android market!  
+
+Before we import the files we will import the necessary libraries:
+
+```{r Libraries, message=FALSE, warning = FALSE, cache=TRUE}
+library(knitr)
+library(kableExtra)
+library(MASS)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(randomForest)
+```
+And now to import the two data-sets (and remove of duplicate rows):
+```{r Data Import, cache=TRUE}
+apps_data <- read.csv("googleplaystore.csv", header = T)
+# Removal of duplicate entries
+apps_data<- distinct(apps_data)
+```
+
+### Research Question
+
+When programming and developing an app for the Google Play Store, a major consideration is whether or not to offer the application for free or charge the customers to download the app. If a developer or company decide to charge for the app a major consideration is how much to charge and how receptive have customers been to apps with various prices.  
+
+In this project our goal is to analyze the data-set to understand and predict which types of applications lend themselves to be download. **Within this we hope to understand based on different factors what leads to more downloads.**  
+
+There are several implications of this study (if successful) such as understanding what people are willing to pay for. This will also give the developers a look into the significance of the different considerations the customers have such as price, number of reviews and rating.
+
+## Data
+
+The "Apps Data" data set is comprised of the following columns:
+```{r, eval=FALSE, echo = FALSE}
+colnames(apps_data)
+```
+Column    |   Description  
+---------------|-------------------------------------------------------------
+App       |   Application Name
+Category  |   Category the app belongs to
+Rating    |   Overall user rating of the app (as when scraped)
+Reviews   |   Number of user reviews for the app (as when scraped) 
+Installs  |   Number of user downloads/installs for the app (as when scraped)
+Size      |   Size of the app
+Type      |   Paid or Free
+Price     |   Price of the app (as when scraped)
+Content Rating  |   Age group the app is targeted at- Children/ Mature 21+ / Adult
+Genres    |   An app can belong to multiple genres (apart from its main category). For ex. a musical family game will belong to Music, Game, Family genres.
+Last Updated  |   Date when the app was last updated on Play Store (as when scraped)
+Current Ver |   Current version of the app available on Play Store (as when scraped)
+Android Ver |   Min required Android version (as when scraped)
+
+```{r, cache=TRUE, echo = FALSE}
+kable(head(apps_data), format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px", height = "300px")
+```
+  
+
+
+### Analysis of the Data and Model Building
+
+To begin we will look at a basic graph to get a sense of the data we're working with. We are going to mainly focus on the **Paid Apps** and with this we will get a sense of what we have to work with. Here we compare the amounts of apps, both paid and free, based on the Category of the app. This is just to get a feel for the difference in the number of free apps vs. paid apps.  
+The Categories are:
+
+```{r Categories, cache=TRUE, echo=FALSE}
+comp1<- apps_data %>% group_by(Category, Type) %>% summarise(num=n()) %>% filter(Type == "Free" || Type == "Paid")
+comp1$Type2<- as.character(comp1$Type)
+comp1<-comp1 %>% filter(Type2 != "NaN")
+levels(comp1$Category)
+```
+
+```{r PaidvsFree, cache=TRUE, echo=FALSE}
+
+ggplot(comp1, aes(y=num, x=Type, color=Type, fill=Category)) + 
+    geom_bar( stat="identity", show.legend = F) +    
+    facet_wrap(~Category) +
+    labs(title="Number of Paid Apps vs. Free Apps based on Category", y="Number of Apps", x="Type")
+```
+
+
+In our data-set there are many more free apps than paid apps in each category. But as we explained earlier our focus will be the paid apps.  
+
+Now if we look only at the paid apps in the same format, we'll be able to get a sense of which categories have enough data for us to begin analyzing:  
+```{r PaidAll, cache=TRUE, echo=FALSE}
+comp2<- apps_data%>%group_by(Category, Type)%>%summarise(num=n())%>%filter(Type == "Paid")
+comp2$Type2<- as.character(comp2$Type)
+comp2<-comp2%>%filter(Type2 != "NaN")
+ggplot(comp2, aes(y=num, x=Type, color=Type, fill=Category)) + 
+    geom_bar( stat="identity", show.legend = F) +    
+    facet_wrap(~Category) +
+    labs(title="Number of Paid Apps based on Category", y="Number of Apps", x="Type")
+```
+
+From this we can see that the categories most helpful to us are: Family, Game, Medical, Personalization, and Tools.  
+
+To begin isolation will separate the paid apps from the free apps and create numeric versions of the columns containing useful numbers.   
+
+```{r Cleaning Data, message=FALSE, warning = FALSE, cache= TRUE }
+paidApps<-apps_data%>%filter(Type == "Paid")
+
+paidApps$Price.num <- as.numeric(gsub("[\\$,]", "", paidApps$Price))
+paidApps$Installs_notlog <-as.numeric(gsub("[\\+,]", "", paidApps$Installs))
+paidApps$Installs.num <- log10(as.numeric(gsub("[\\+,]", "", paidApps$Installs)))
+paidApps$Installs.num[paidApps$Installs=='0+']<-0
+paidApps$Rating.num <- as.numeric(paidApps$Rating)
+paidApps$Reviews.num <- as.numeric(paidApps$Reviews)
+paidApps$Size.num<- as.numeric(gsub("[\\M,]", "", paidApps$Size))
+paidApps<-paidApps[complete.cases(paidApps),]
+```
+
+
+We will now filter out just the apps that fall into these categories.  
+
+```{r Useful Apps, cache = TRUE}
+usefulPApps<-paidApps%>%filter(Category=="FAMILY" | Category== "GAME" | Category== "MEDICAL" | Category ==  "PERSONALIZATION" | Category ==  "TOOLS")
+usefulPApps <- data.frame(App = usefulPApps$App, 
+                          Category = usefulPApps$Category,
+                          Rating = usefulPApps$Rating.num, 
+                          Reviews = usefulPApps$Reviews.num, 
+                          Size = usefulPApps$Size.num, 
+                          Installs = usefulPApps$Installs_notlog, 
+                          Installs.log = usefulPApps$Installs.num, 
+                          Price = usefulPApps$Price.num )
+kable(usefulPApps[1:15,], format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px", height = "300px")
+usefulPApps$Category <- factor(usefulPApps$Category)
+levels(usefulPApps$Category)
+nrow(usefulPApps)
+```
+  
+
+We will now look at the frequencies of the values for "Price", "Rating", "Number of Downloads" (in log scale), and the "Number of Reviews":
+
+```{r Data Variables, cache=TRUE}
+par(mfrow=c(2,3))
+hist(usefulPApps$Price, main = "Price of App", xlab = "Price")
+hist(usefulPApps$Rating, main = "Ratings", xlab = "Rating")
+hist(usefulPApps$Installs.log, main = "Number of Downloads", xlab = "Installs (log)")
+hist(usefulPApps$Reviews, main = "Number of Reviews", xlab = "Reviews")
+hist(usefulPApps$Size, main = "Size of App", xlab = "Size (Mb)")
+bp<-barplot(table(usefulPApps$Category), main = "Categories", las = 2, col = c(1:5), xaxt = "n")
+text(bp, par("usr")[3], labels = as.character(levels(usefulPApps$Category)), srt = 45, adj = c(1.1,1.1), xpd = TRUE, cex=0.8)
+```
+   
+   Looking at these histograms, we compare each of the 5 variables with the other (keeping in mind that the "Number of Installs" is in a log scale) and using different colors for each category (as set by the previous graphs): 
+  
+```{r, cache = TRUE}
+plot(usefulPApps[c(7,8,3,4,5)],col = usefulPApps$Category)
+```
+  
+Looking back at the results, it's important to point out that there are apps that have prices of over $50, some of which may be useful but over all most of the apps are solely expensive to be expensive:
+```{r, cache=TRUE}
+kable(usefulPApps%>%filter(Price>50), format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px")
+```
+
+
+If we remove the unnecessarily expensive apps (apps more than $50) then we can get a better understanding of how the price relates to the other categories.
+
+```{r, cache = TRUE}
+usefulPApps2<-usefulPApps%>%filter(Price<50)
+plot(usefulPApps2[c(7,8,3,4,5)],col = usefulPApps2$Category)
+
+```
+
+We are left with 354 apps that we will base our analysis off of.
+
+```{r, cache = TRUE}
+nrow(usefulPApps2)
+```
+   
+ Since what mainly interests us is what leads to more installs, there are a few things we notice:  
+ 
+ * Cheaper applications tend to have more installs  
+ * There are more installations of applications that have a higher rating (Which makes sense)  
+ * There many more cheaper apps with large amounts of reviews than expensive apps.    
+ * We expected to see a linear connection between the number of Installs and the number of Reviews of an app but this is not the case. There is a middle range where there's a higher concentration of applications that have no correlation between installs and reviews, but on both ends of the extreme we see strange results. There are apps with very few downloads but many reviews, and vice versa.  
+
+
+
+## Exploratory Data Analysis
+
+### Linear Model
+
+At first we considered using a linear regression test but based on the graphs in the previous section the data doesn't seem to fit into this type of model, but we will check the validity of this idea.  
+For each parameter (Price, Reviews, Number of Ratings, and Size) we will check the following hypothesis test to see if a linear model fits the relationship.
+**Hypothesis Test**  
+$$H_0: \beta_1 = 0 \rightarrow \text{There is no linear relation}$$
+$$H_a: \beta_1 \ne 0 \rightarrow \text{There is a linear relation}$$
+
+```{r Linear Models, cache=TRUE}
+price.lm <- lm(formula = Installs.log~Price, data = usefulPApps2)
+summary(price.lm)
+
+reviews.lm <- lm(formula = Installs.log~Reviews, data = usefulPApps2)
+summary(reviews.lm)
+
+rating.lm <- lm(formula = Installs.log~Rating, data = usefulPApps2)
+summary(rating.lm)
+
+size.lm <- lm(formula = Installs.log~Size, data = usefulPApps2)
+summary(size.lm)
+
+par(mfrow = c(2, 2))
+plot(Installs.log~Price, data=usefulPApps2, 
+     ylab = "Installs (log)", xlab = "Price", col = Category)
+abline(price.lm, lwd = 2, col = "pink")
+plot(Installs.log~Reviews, data=usefulPApps2, 
+     ylab = "Installs (log)", xlab = "Reviews", col = Category)
+abline(reviews.lm, lwd = 2, col = "pink")
+plot(Installs.log~Rating, data=usefulPApps2, 
+     ylab = "Installs (log)", xlab = "Rating", col = Category)
+abline(rating.lm, lwd = 2, col = "pink")
+plot(Installs.log~Size, data=usefulPApps2, 
+     ylab = "Installs (log)", xlab = "Size", col = Category)
+abline(size.lm, lwd = 2, col = "pink")
+```
+  
+**Price** - when evaluating the P-Score of $\beta_1$ we received $P(>|t|)=0.665> 0.05$, therefor we accept the $H_0$, there is no linear relationship between Price and Number of Downloads.
+
+**Reviews** - when evaluating the P-Score of $\beta_1$ we received $P(>|t|)=0.0252 < 0.05$, therefor we reject the $H_0$ and accept the $H_a$, there is a linear relationship between Number of Reviews and Number of Downloads.
+
+**Rating** - when evaluating the P-Score of $\beta_1$ we received $P(>|t|)=0.625 > 0.05$, therefor we accept the $H_0$, there is no linear relationship between App Rating and Number of Downloads.
+
+**Size** - when evaluating the P-Score of $\beta_1$ we received $P(>|t|)=0.0097 < 0.05$, therefor we reject the $H_0$ and accept the $H_a$, there is a linear relationship between the Size of the App and Number of Downloads.
+
+_These results seem a bit odd, we would have though the complete opposite would occur, that the price and ratings would lead to a linear relationship while the size would be unrelated. We did however expect that the number of reviews would have an impact on the number of downloads since if there are many reviews that implies many people downloaded the app in order to review it._
+
+With these tests when we check the correlation and the $R^2$ value, we would expect the values for the Size and Reviews to be greater (closer to one). But in reality all the values came back extremely low: 
+
+```{r Linear Correlation, cache=TRUE}
+Corr_vals <-c(cor(x = usefulPApps2$Price, y = usefulPApps2$Installs.log), 
+              cor(x = usefulPApps2$Reviews, y = usefulPApps2$Installs.log), 
+              cor(x = usefulPApps2$Rating, y = usefulPApps2$Installs.log),
+              cor(x = usefulPApps2$Size, y = usefulPApps2$Installs.log))
+R2_vals <- Corr_vals^2
+val <- data.frame(Price = c(Corr_vals[1], R2_vals[1]), 
+                  Reviews = c(Corr_vals[2], R2_vals[2]), 
+                  Rating = c(Corr_vals[3], R2_vals[3]), 
+                  Size = c(Corr_vals[4], R2_vals[4]))
+row.names(val)<- c("Correlation", "R ^2 Values")
+kable(val, format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px")
+```
+
+Our next guess was to hopefully use a Box-Cox plot to properly find a fitting transformation other than $log_{10}(Y)$, which we previously assumed would be a fitting transformation, when comparing to all our other variables (we check both including Category as its own variable and one checking each variable dependent on Category):  
+
+```{r Transformations, cache=TRUE}
+apps_model_a = lm(Installs ~ Price + Rating + Reviews + Size + Category,
+                data = usefulPApps2)
+apps_model_b = lm(Installs ~ (Price + Rating + Reviews + Size) * Category,
+                data = usefulPApps2)
+summary(apps_model_a)
+summary(apps_model_b)
+boxcox(apps_model_a, lambda = seq(-0.25, 0.25, by = 0.01), plotit = TRUE)
+
+```
+
+To our disappointment, the "nicest" $\lambda$ option within the confidence interval is equal to 0, meaning $log_{10}(Y)$ was in fact the best option... so still no dice...
+
+### Generalized Linear Model - Logistic Regression
+Our next attempt to find some form of correlation, was to define a binary attribute "Success" based on the amount of downloads. We need to define what is considered a successful amount of downloads. looking at the initial histogram above we've decided to define "success" as having over 50,000 downloads.
+We now add a column with a Boolean value to define which apps are successes.
+   
+```{r Success Column, cache = TRUE}
+usefulPApps2$Success[usefulPApps2$Installs>=5e4]<-1
+usefulPApps2$Success[usefulPApps2$Installs<5e4]<-0
+
+sum(usefulPApps2[,'Success']==1)
+sum(usefulPApps2[,'Success']==0)
+```
+
+With this new definition of "success", we will preform *Logistic Regression* for each of the four parameters vs. the Number of Installs using the model:
+$$\log\left(\frac{p({\bf x})}{1 - p({\bf x})}\right) = \beta_0 + \beta_1 x_{i1} + \cdots + \beta_{p-1} x_{i(p-1)} $$
+
+In our case, $Y\sim\text{Bern}(p(x))$, and $p(x)$ is equal to:
+```{r, cache = TRUE}
+p.x <- mean(usefulPApps2$Success)
+p.x
+```
+
+For each of the parameters we will not only search for $$ \log\left(\frac{p({\bf x})}{1 - p({\bf x})}\right) = \beta_0 + \beta_1 x $$ but we will check the probability of receiving successes with polynomial regressions as well:  
+$\log\left(\frac{p({\bf x})}{1 - p({\bf x})}\right) = \beta_0 + \beta_1 x +\beta_2 x^2$ and $\log\left(\frac{p({\bf x})}{1 - p({\bf x})}\right)= \beta_0 + \beta_1 x +\beta_2 x^2 + \beta_3 x^3$
+
+_Jitter is added to the plots in order to emphasize the amount of points in the plot (although they are still all equal to 0 or 1), and a pink line representing when the probability is equal to $0.5$_
+  
+**Price vs. Success**
+
+```{r Price GLM, cache=TRUE}
+price.glm<-glm(Success ~ Price, data = usefulPApps2, family = binomial(link = "logit"))
+price.glm2<-glm(Success ~ poly(Price, degree = 2), 
+                data = usefulPApps2, family = binomial(link = "logit"))
+price.glm3<-glm(Success ~ poly(Price, degree = 3), 
+                data = usefulPApps2, family = binomial(link = "logit"))
+price.lm2<-lm(Success ~ Price, data = usefulPApps2)
+summary(price.lm2)
+summary(price.glm)
+summary(price.glm2)
+summary(price.glm3)
+plot(jitter(Success, factor = 0.1) ~ Price, data = usefulPApps2, 
+     pch = 20, ylab = "Successful Apps", 
+     main = "Success vs. Price")
+abline(price.lm2, col = "darkorange")
+abline(h = 0.5, col = "pink")
+curve(predict(price.glm, newdata = data.frame(Price=x), type='response'), 
+      add = TRUE, col = "dodgerblue", lty = 2)
+curve(predict(price.glm2, newdata = data.frame(Price=x), type='response'),
+      add = TRUE, col = "darkred", lty = 2)
+curve(predict(price.glm3, newdata = data.frame(Price=x), type='response'),
+      add = TRUE, col = "darkgreen", lty = 2)
+legend("topright", c("Linear", "Logistic","Logistic (x^2)","Logistic (x^3)", "Data"), 
+       lty = c(1, 2, 3, 4, 0), 
+       pch = c(NA, NA, NA, NA, 20), lwd = 2, 
+       col = c("darkorange", "dodgerblue","darkred","darkgreen","black"),
+       bty = "n")
+```
+  
+**Rating vs. Success**
+
+```{r Rating GLM, cache=TRUE}
+Rating.glm<-glm(Success ~ Rating, data = usefulPApps2, family = binomial(link = "logit"))
+Rating.glm2<-glm(Success ~ poly(Rating, degree = 2), 
+                 data = usefulPApps2, family = binomial(link = "logit"))
+Rating.glm3<-glm(Success ~ poly(Rating, degree = 3), 
+                 data = usefulPApps2, family = binomial(link = "logit"))
+Rating.lm2<-lm(Success ~ Rating, data = usefulPApps2)
+summary(Rating.lm2)
+summary(Rating.glm)
+summary(Rating.glm2)
+summary(Rating.glm3)
+plot(jitter(Success, factor = 0.1) ~ Rating, data = usefulPApps2, 
+     pch = 20, ylab = "Successful Apps", 
+     main = "Success vs. Rating")
+abline(Rating.lm2, col = "darkorange")
+abline(h = 0.5, col = "pink")
+curve(predict(Rating.glm, newdata = data.frame(Rating=x), type='response'), 
+      add = TRUE, col = "dodgerblue", lty = 2)
+curve(predict(Rating.glm2, newdata = data.frame(Rating=x), type='response'), 
+      add = TRUE, col = "darkred", lty = 2)
+curve(predict(Rating.glm3, newdata = data.frame(Rating=x), type='response'), 
+      add = TRUE, col = "darkgreen", lty = 2)
+legend("topleft", c("Linear", "Logistic","Logistic (x^2)","Logistic (x^3)", "Data"), 
+       lty = c(1, 2, 3, 4, 0), 
+       pch = c(NA, NA, NA, NA, 20), lwd = 2, 
+       col = c("darkorange", "dodgerblue","darkred","darkgreen","black"), 
+       bty = "n")
+```
+  
+**Reviews vs. Success**
+
+```{r Reviews GLM, cache=TRUE}
+Reviews.glm<-glm(Success ~ Reviews, data = usefulPApps2, family = binomial(link = "logit"))
+Reviews.glm2<-glm(Success ~ poly(Reviews, degree = 2), 
+                  data = usefulPApps2, family = binomial(link = "logit"))
+Reviews.glm3<-glm(Success ~ poly(Reviews, degree = 3), 
+                  data = usefulPApps2, family = binomial(link = "logit"))
+Reviews.lm2<-lm(Success ~ Reviews, data = usefulPApps2)
+summary(Reviews.glm)
+summary(Reviews.glm2)
+summary(Reviews.glm3)
+plot(jitter(Success, factor = 0.1)~ Reviews, data = usefulPApps2, 
+     pch = 20, ylab = "Successful Apps", 
+     main = "Success vs. Reviews")
+abline(Reviews.lm2, col = "darkorange")
+abline(h = 0.5, col = "pink")
+curve(predict(Reviews.glm, newdata = data.frame(Reviews=x), type='response'), 
+      add = TRUE, col = "dodgerblue", lty = 2)
+curve(predict(Reviews.glm2, newdata = data.frame(Reviews=x), type='response'), 
+      add = TRUE, col = "darkred", lty = 2)
+curve(predict(Reviews.glm3, newdata = data.frame(Reviews=x), type='response'), 
+      add = TRUE, col = "darkgreen", lty = 2)
+legend("topleft", c("Linear", "Logistic","Logistic (x^2)","Logistic (x^3)", "Data"), 
+       lty = c(1, 2, 3, 4, 0), 
+       pch = c(NA, NA, NA, NA, 20), lwd = 2, 
+       col = c("darkorange", "dodgerblue","darkred","darkgreen","black"),
+       bty ="n")
+```
+  
+**Size vs. Success**
+
+```{r Size GLM, cache=TRUE}
+Size.glm<-glm(Success ~ Size, data = usefulPApps2, family = binomial(link = "logit"))
+Size.glm2<-glm(Success ~ poly(Size, degree = 2), 
+                  data = usefulPApps2, family = binomial(link = "logit"))
+Size.glm3<-glm(Success ~ poly(Size, degree = 3), 
+                  data = usefulPApps2, family = binomial(link = "logit"))
+Size.lm2<-lm(Success ~ Size, data = usefulPApps2)
+summary(Size.glm)
+summary(Size.glm2)
+summary(Size.glm3)
+plot(jitter(Success, factor = 0.1)~ Size, data = usefulPApps2, 
+     pch = 20, ylab = "Successful Apps", 
+     main = "Success vs. Size")
+abline(Size.lm2, col = "darkorange")
+abline(h = 0.5, col = "pink")
+curve(predict(Size.glm, newdata = data.frame(Size=x), type='response'), 
+      add = TRUE, col = "dodgerblue", lty = 2)
+curve(predict(Size.glm2, newdata = data.frame(Size=x), type='response'), 
+      add = TRUE, col = "darkred", lty = 2)
+curve(predict(Size.glm3, newdata = data.frame(Size=x), type='response'), 
+      add = TRUE, col = "darkgreen", lty = 2)
+legend("left", c("Linear", "Logistic","Logistic (x^2)","Logistic (x^3)", "Data"), 
+       lty = c(1, 2, 3, 4, 0), 
+       pch = c(NA, NA, NA, NA, 20), lwd = 2, 
+       col = c("darkorange", "dodgerblue","darkred","darkgreen","black"),
+       bty ="n")
+```
+
+Looking at all of these results, when we begin to move out of linear regressions and move into non-linear models we still find that most of the reslults lead to us to fail to reject the Null Hypothesis that there is no correlation.
+We can also look at the results returned in the AIC calculation when discussing GLM (even for the models that we were able to reject the Null Hypothesis for) to see if there truly is some form of relationship. In general a high AIC is seen as a "bad model", and each of our tests returned a high value.
+
+```{r AIC of GLM, cache = TRUE}
+AIC_data <- data.frame(GLM = c("x", "x+x^2", "x+x^2+x^3"),Price = c(price.glm$aic, price.glm2$aic, price.glm3$aic), 
+                       Reviews = c(Reviews.glm$aic, Reviews.glm2$aic, Reviews.glm3$aic),
+                       Rating = c(Rating.glm$aic, Rating.glm2$aic, Rating.glm3$aic),
+                       Size = c(Size.glm$aic, Size.glm2$aic, Size.glm3$aic))
+
+kable(AIC_data, format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px")
+```
+
+If we look at the all the variables together:
+```{r, cache=TRUE}
+PRRS.glm<-glm(Success ~ Category + Price + Rating + Reviews + Size, 
+            data = usefulPApps2)
+summary(PRRS.glm)$aic
+PRRS.glm2<-glm(Success ~ Category * (Price + Rating + Reviews + Size), 
+              data = usefulPApps2, 
+              family = binomial(link = "logit"))
+summary(PRRS.glm2)$aic
+```
+These also returns a very low correlations (high AIC values). We will point out that there are some values that do manage to reject the $H_0$ but there is still no apparent correlation. 
+  
+### Machine Learning Model
+To continue, we are going to try a machine learning method -- **Random Forest**. We will take $70\%$ of the data and create a training data frame by sampling called `train.apps`. The remaining apps will be placed into a data frame called `test.apps`.
+
+```{r Seperating Train and Test, cache = TRUE}
+set.seed(6)
+train.apps <- usefulPApps2[sample(nrow(usefulPApps2), nrow(usefulPApps2)*0.7), ]
+test.apps  <- usefulPApps2[!(usefulPApps2$App%in%train.apps$App),]
+```
+
+Summary of Training Date:  
+
+```{r, cache = TRUE}
+kable(t(summary(train.apps)), format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px", height = "300px")
+```
+
+Summary of Test Data:  
+
+```{r, cache = TRUE}
+kable(t(summary(test.apps)), format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px", height = "300px")
+```
+
+```{r Random Forest 1, cache = TRUE}
+set.seed(6)
+# Train the model with a grid search of 10 folders
+trControl <- trainControl(method = "cv",
+    number = 10,
+    search = "grid")
+RFmodel1 <- train(as.factor(Success)~Category+Rating+Size+Reviews+Price, 
+                  data = train.apps,
+                  method='rf', 
+                  metric='Accuracy')
+RFmodel1
+```
+  
+  
+We are now going to attempt to improve the model: 
+  
+To begin, we want to optimize the `mtry`. The `mtry` is the number of variables randomly sampled at each stage.
+
+```{r Optimizing mtry, cache = TRUE}
+set.seed(6)
+tuneGrid <- expand.grid(.mtry = c(1:8))
+RFmodel2 <- train(as.factor(Success)~as.factor(Category)+Rating+Size+Reviews+Price, 
+                  data = train.apps,
+                  method='rf', 
+                  metric='Accuracy',
+                  tuneGrid = tuneGrid,
+                  trControl = trControl,
+                  importance = TRUE,
+                  nodesize = 14,
+                  ntree = 300)
+RFmodel2
+bestmtry <- RFmodel2$bestTune$mtry
+bestmtry
+```
+
+Now we will optimize the `maxnode` variable, which represents the max number of connections between decision trees:
+
+```{r Optimizing Max Nodes, cache = TRUE}
+store_maxnode <- list()
+tuneGrid <- expand.grid(.mtry = bestmtry)
+for (maxnodes in c(10:30)){
+  set.seed(6)
+  RFmodel2_maxn <- train(as.factor(Success)~as.factor(Category)+Rating+Size+Reviews+Price, 
+                  data = train.apps,
+                  method='rf', 
+                  metric='Accuracy',
+                  tuneGrid = tuneGrid,
+                  trControl = trControl,
+                  importance = TRUE,
+                  nodesize = 14,
+                  maxnodes = maxnodes,
+                  ntree = 300)
+  current_it<- toString(maxnodes)
+  store_maxnode[[current_it]]<- RFmodel2_maxn
+}
+resultsmaxnode <- resamples(store_maxnode)
+summary(resultsmaxnode)
+```
+The highest accuracy obtained was when `maxnodes = 20`.
+
+Now we will tune for the best `ntrees`, the number of decision trees in our "forest":
+
+```{r Optimizing ntrees, cache = TRUE}
+store_maxtrees <- list()
+for (ntree in c(250, 300, 350, 400, 450, 500, 550, 600, 800, 1000, 2000)){
+  set.seed(8)
+  RFmodel2_maxtree <- train(as.factor(Success)~as.factor(Category)+Rating+Size+Reviews+Price, 
+                  data = train.apps,
+                  method='rf', 
+                  metric='Accuracy',
+                  tuneGrid = tuneGrid,
+                  trControl = trControl,
+                  importance = TRUE,
+                  nodesize = 14,
+                  maxnodes = 20,
+                  ntree = ntree)
+  key<- toString(ntree)
+  store_maxtrees[[key]]<- RFmodel2_maxtree
+}
+resultstree <- resamples(store_maxtrees)
+summary(resultstree)
+max(summary(resultstree)$values)
+```
+From here we will use `ntrees = 600`.
+
+To summarize: our optimal Random forest run will use the following values:  
+* `mtry = 2`  
+* `maxnodes = 20`  
+* `ntrees = 600`  
+
+We will run the simulation one more time using these optimized values:
+
+```{r Random Forest 2, cache = TRUE}
+set.seed(10)
+RFmodel_opt <- train(as.factor(Success)~as.factor(Category)+Rating+Size+Reviews+Price, 
+                  data = train.apps,
+                  method='rf', 
+                  metric='Accuracy',
+                  tuneGrid = tuneGrid,
+                  trControl = trControl,
+                  importance = TRUE,
+                  nodesize = 14,
+                  maxnodes = 20,
+                  ntree = 600)
+RFmodel_opt
+```
+
+```{r, cache = TRUE}
+set.seed(16)
+# Predictions on the Training Data
+train.apps$Prediction1 <-predict(RFmodel_opt, train.apps)
+kable(train.apps[sample(nrow(train.apps), size = 10),
+                 c('App','Success','Prediction1')], format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px", height = "300px")
+train_tab = table(predicted = train.apps$Prediction1, actual = as.factor(train.apps$Success))
+confusionMatrix(train_tab, positive = "1")
+```
+
+First we will look at the model when applied back onto the trained data that we trained the model on. We received an Accuracy of 0.8178 (Error = 0.1822). It is important to look at the Sensitivity and Specificity when looking at the Confusion Matrix. In this run, we received a very low Sensitivity, meaning that there were  many mistakes when assigning a "0" where the value should have returned a "1" (false negetive). But on the other hand, the specificity in this run returned a 1.00, meaning that anytime the machine did predict a "1", the value was in fact a true "1". When looking at the balanced accuracy we see that the model is not truly 81% accurate rather closer to 66% accurate (taking into account the sensibility and specificity), meaning our model is not the most reliable model. 
+Even so we still ran the model on our test data and received the following results
+
+```{r, cache=TRUE}
+#Predictions on the Test Data
+test.apps$Prediction1 <-predict(RFmodel_opt, test.apps)
+kable(test.apps[sample(nrow(test.apps), size = 10),
+                 c('App','Success','Prediction1')], format = "html")  %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% 
+  column_spec(column = 1, width_min = "10em", border_right = T, bold = T) %>%
+  scroll_box(fixed_thead = T, width = "800px", height = "300px")
+test_tab = table(predicted = test.apps$Prediction1, actual = as.factor(test.apps$Success))
+confusionMatrix(test_tab, positive = "1")
+```
+
+Looking at the results, based on how we explained them for the previous run, we see that when applied to the test data, the results were all around less accurate (Accuracy = 0.7736, Error = 0.2264). Like before, we received a very low sensitivity, while keeping a very high specificity. We again are able to rely on "1"'s received much more than a returned "0". Here the balanced Accuracy returned was 0.61722, which like we mentioned above is not the most reliable accuracy when trying to predict data.
+
+# Conclusion
+
+When returning to our initial research question we are sadly disappointed in the inability to find a reliable predictor to anticipate the approximate Number of Downloads an App will have.  
+We started off with the assumption that certain variables would have a major impact on how popular an app is. To our surprise there was no obvious relationship and even when trying to apply a simple linear model to the data we were greeted with no correlation.  
+When moving into the realm of a binary model (logistic regression) we expected to find more of a correlation (especially when moving into non-linear models) but again were unsuccessful. 
+Our final attempt at developing a model for the data was to use the Random Forrest Machine Learning algorithm which at first glance gave back semi=positive results with accuracies greater than 75%. But when looking at the results more carefully again the model was not as accurate and reliable as we had hoped for.  
+
+The major takeaway from this project is the surprising realization that there is very little correlation between the number of downloads and the other parameters. When thinking about how to move forward from this project with the data, an idea is to not define the success of the app based on the number of downloads rather on a parameter more closely related to the users experience with the app, such as the rating or level of the reviews. Once customers like a product it's much easier to then sell a lot of the said product.  
